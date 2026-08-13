@@ -1,8 +1,20 @@
 import streamlit as st
 import random
 import hashlib
-import sqlite3
+import psycopg2
 from datetime import datetime, timedelta
+import sqlite3
+
+
+def get_db_connection():
+    return psycopg2.connect(st.secrets["DATABASE_URL"])
+
+try:
+    conn = get_db_connection()
+    conn.close()
+    st.success("✅ PostgreSQL connection successful!")
+except Exception as e:
+    st.error(f"❌ PostgreSQL connection failed: {e}")
 
 # database_setup.py
 
@@ -358,11 +370,13 @@ def hash_password(password):
 
 # Safe user creation
 def create_user(username, password, role="client"):
-    conn = sqlite3.connect("pilot_system.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Check if username already exists
-    cursor.execute("SELECT user_id FROM users WHERE username = ?", (username,))
+    cursor.execute(
+        "SELECT user_id FROM users WHERE username = %s",
+        (username,)
+    )
     existing = cursor.fetchone()
 
     if existing:
@@ -370,15 +384,18 @@ def create_user(username, password, role="client"):
         user_id = existing[0]
     else:
         cursor.execute(
-            "INSERT INTO users (username, password) VALUES (?, ?)",
-            (username, hash_password(password),)
+            "INSERT INTO users (username, password) VALUES (%s, %s) RETURNING user_id",
+            (username, hash_password(password))
         )
+        user_id = cursor.fetchone()[0]
         conn.commit()
-        user_id = cursor.lastrowid
         print(f"[SUCCESS] User '{username}' created successfully. (User ID: {user_id})")
 
     conn.close()
-    return user_id  # return user_id for linking machines/work orders
+    return user_id
+
+
+# return user_id for linking machines/work orders
 
 
 # Example usage
@@ -393,9 +410,9 @@ create_user("Raza0421", "sxb123456")
 # ======================
 def verify_user(username, password):
     hashed = hash_password(password)
-    conn = sqlite3.connect("pilot_system.db")
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE username=? AND password=?", (username, hashed))
+    c.execute("SELECT user_id FROM users WHERE username=%s AND password=%s", (username, hashed))
     user = c.fetchone()
     conn.close()  # close AFTER fetching
     if user:
@@ -679,7 +696,7 @@ def ai_page():
         st.session_state.processing_message = False
         return
 
-    conn = sqlite3.connect("pilot_system.db")
+    conn = get_db_connection()
     c = conn.cursor()
 
     # ==========================
@@ -719,7 +736,7 @@ def ai_page():
 
         c.execute("""
         SELECT name,total_breakdowns,max_runtime_per_day
-        FROM machines WHERE user_id=?
+        FROM machines WHERE user_id=%s
         """, (user_id,))
 
         machines = c.fetchall()
@@ -751,7 +768,7 @@ def ai_page():
         c.execute("""
         SELECT total_breakdowns,max_runtime_per_day
         FROM machines
-        WHERE user_id=? AND name=?
+        WHERE user_id=%s AND name=%s
         """, (user_id, machine))
 
         row = c.fetchone()
@@ -771,7 +788,7 @@ def ai_page():
         c.execute("""
         SELECT status,COUNT(*)
         FROM work_orders
-        WHERE user_id=?
+        WHERE user_id=%s
         GROUP BY status
         """, (user_id,))
 
@@ -791,7 +808,7 @@ def ai_page():
 
         c.execute("""
         SELECT name,total_breakdowns
-        FROM machines WHERE user_id=?
+        FROM machines WHERE user_id=%s
         """, (user_id,))
 
         rows = c.fetchall()
@@ -807,7 +824,7 @@ def ai_page():
     # ==========================
     else:
 
-        c.execute("SELECT COUNT(*) FROM machines WHERE user_id=?",
+        c.execute("SELECT COUNT(*) FROM machines WHERE user_id=%s",
                   (user_id,))
         total = c.fetchone()[0]
 
@@ -893,8 +910,7 @@ def manual_page():
             st.error("User session not found. Please login first.")
             st.stop()
 
-        conn = sqlite3.connect("pilot_system.db")
-        conn.execute("PRAGMA foreign_keys = ON")
+        conn = get_db_connection()
         c = conn.cursor()
 
         # Fetch all machines for user
@@ -910,7 +926,7 @@ def manual_page():
                          total_breakdowns,
                          max_runtime_per_day
                   FROM machines
-                  WHERE user_id = ?
+                  WHERE user_id = %s
                   """, (user_id,))
         machines = c.fetchall()
 
@@ -933,8 +949,8 @@ def manual_page():
             c.execute("""
                       SELECT sensor_type, sensor_value
                       FROM sensor_readings
-                      WHERE user_id = ?
-                        AND machine_id = ?
+                      WHERE user_id = %s
+                        AND machine_id = %s
                       ORDER BY recorded_at DESC
                       """, (user_id, machine_id))
             sensor_rows = c.fetchall()
@@ -1143,9 +1159,8 @@ def manual_page():
             st.error("User session not found. Please login first.")
             st.stop()
 
-        conn = sqlite3.connect("pilot_system.db")
+        conn = get_db_connection()
         c = conn.cursor()
-
         # ==========================
         # FETCH MACHINES
         # ==========================
@@ -1166,7 +1181,7 @@ def manual_page():
                          manufacturer,
                          cost
                   FROM machines
-                  WHERE user_id = ?
+                  WHERE user_id = %s
                   """, (user_id,))
         machines = c.fetchall()
 
@@ -1236,16 +1251,16 @@ def manual_page():
         c.execute("""
                   SELECT COUNT(*)
                   FROM work_orders
-                  WHERE user_id = ?
-                    AND machine_id = ?
+                  WHERE user_id = %s
+                    AND machine_id = %s
                   """, (user_id, machine_id))
         total_workorders = c.fetchone()[0]
 
         c.execute("""
                   SELECT COUNT(*)
                   FROM work_orders
-                  WHERE user_id = ?
-                    AND machine_id = ?
+                  WHERE user_id = %s
+                    AND machine_id = %s
                     AND status = 'Completed'
                   """, (user_id, machine_id))
         completed_workorders = c.fetchone()[0]
@@ -1259,8 +1274,8 @@ def manual_page():
         c.execute("""
                   SELECT SUM(maintenance_cost)
                   FROM work_orders
-                  WHERE user_id = ?
-                    AND machine_id = ?
+                  WHERE user_id = %s
+                    AND machine_id = %s
                   """, (user_id, machine_id))
         total_maintenance_cost = c.fetchone()[0] or 0
 
@@ -1378,7 +1393,7 @@ def manual_page():
         # ==========================
         st.markdown("### 📟 Current Sensor Readings")
 
-        conn = sqlite3.connect("pilot_system.db")
+        conn = get_db_connection()
         c = conn.cursor()
 
         yesterday = datetime.now() - timedelta(days=1)
@@ -1386,9 +1401,9 @@ def manual_page():
         c.execute("""
                   SELECT sensor_type, sensor_value
                   FROM sensor_readings
-                  WHERE user_id = ?
-                    AND machine_id = ?
-                    AND recorded_at >= ?
+                  WHERE user_id = %s
+                    AND machine_id = %s
+                    AND recorded_at >= %s
                   ORDER BY recorded_at DESC
                   """, (user_id, machine_id, yesterday.strftime("%Y-%m-%d %H:%M:%S")))
 
@@ -1441,7 +1456,7 @@ def manual_page():
             st.error("User session not found. Please login first.")
             st.stop()
 
-        conn = sqlite3.connect("pilot_system.db")
+        conn = get_db_connection()
         c = conn.cursor()
 
         # ======================
@@ -1460,7 +1475,7 @@ def manual_page():
                          completed_at,
                          timeline_notes
                   FROM work_orders
-                  WHERE user_id = ?
+                  WHERE user_id = %s
                   ORDER BY created_at DESC
                   """, (user_id,))
         work_orders = c.fetchall()
@@ -1486,7 +1501,7 @@ def manual_page():
                 due_dt = datetime.strptime(due_date, "%Y-%m-%d")
                 if today > due_dt:
                     # Delete expired work order
-                    c.execute("DELETE FROM work_orders WHERE work_order_id=?", (work_order_id,))
+                    c.execute("DELETE FROM work_orders WHERE work_order_id=%s", (work_order_id,))
                     conn.commit()
                     continue  # skip display
             else:
@@ -1602,7 +1617,7 @@ def manual_page():
         # ========================
         if submitted:
             try:
-                conn = sqlite3.connect("pilot_system.db")
+                conn = get_db_connection()
                 c = conn.cursor()
 
                 c.execute(
@@ -1611,7 +1626,7 @@ def manual_page():
                                           install_date, designed_life_years, max_runtime_per_day,
                                           warranty_start_date, warranty_end_date, total_breakdowns,
                                           environment_condition, cost, downtime_cost_per_hour, manufacturer)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
@@ -1653,12 +1668,11 @@ def manual_page():
         # ========================
         # FETCH MACHINES FOR THIS USER
         # ========================
-        conn = sqlite3.connect("pilot_system.db")
-        conn.execute("PRAGMA foreign_keys = ON")
+        conn = get_db_connection()
         c = conn.cursor()
 
         c.execute(
-            "SELECT machine_id, name, location FROM machines WHERE user_id = ?",
+            "SELECT machine_id, name, location FROM machines WHERE user_id = %s",
             (user_id,)
         )
         machines = c.fetchall()
@@ -1721,8 +1735,7 @@ def manual_page():
         # ========================
         if submitted:
             try:
-                conn = sqlite3.connect("pilot_system.db")
-                conn.execute("PRAGMA foreign_keys = ON")
+                conn = get_db_connection()
                 c = conn.cursor()
 
                 c.execute(
@@ -1741,7 +1754,7 @@ def manual_page():
                                              timeline_notes,
                                              downtime_hours,
                                              maintenance_cost)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
@@ -1791,11 +1804,11 @@ def manual_page():
         # ===============================
         # FETCH USER MACHINES
         # ===============================
-        conn = sqlite3.connect("pilot_system.db")
+        conn = get_db_connection()
         c = conn.cursor()
 
         c.execute(
-            "SELECT machine_id, name FROM machines WHERE user_id = ?",
+            "SELECT machine_id, name FROM machines WHERE user_id = %s",
             (user_id,)
         )
         machines = c.fetchall()
@@ -1873,14 +1886,26 @@ def manual_page():
                     st.error("❌ Please provide threshold value.")
                 else:
                     try:
-                        conn = sqlite3.connect("pilot_system.db")
+                        conn = get_db_connection()
                         c = conn.cursor()
 
                         c.execute(
                             """
-                            INSERT OR REPLACE INTO machine_thresholds
-                            (user_id, machine_id, sensor_type, threshold_value, threshold_method, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
+                            INSERT INTO machine_thresholds
+                            (
+                                user_id,
+                                machine_id,
+                                sensor_type,
+                                threshold_value,
+                                threshold_method,
+                                created_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (user_id, machine_id, sensor_type)
+                            DO UPDATE SET
+                                threshold_value = EXCLUDED.threshold_value,
+                                threshold_method = EXCLUDED.threshold_method,
+                                created_at = EXCLUDED.created_at
                             """,
                             (
                                 user_id,
@@ -1930,11 +1955,11 @@ def manual_page():
         # ===============================
         # FETCH USER MACHINES
         # ===============================
-        conn = sqlite3.connect("pilot_system.db")
+        conn = get_db_connection()
         c = conn.cursor()
 
         c.execute(
-            "SELECT machine_id, name FROM machines WHERE user_id = ?",
+            "SELECT machine_id, name FROM machines WHERE user_id = %s",
             (user_id,)
         )
         machines = c.fetchall()
@@ -2001,7 +2026,7 @@ def manual_page():
                 st.error("❌ No readings to save.")
             else:
                 try:
-                    conn = sqlite3.connect("pilot_system.db")
+                    conn = get_db_connection()
                     c = conn.cursor()
 
                     # Fetch threshold for this machine & sensor
@@ -2009,9 +2034,9 @@ def manual_page():
                         """
                         SELECT threshold_value
                         FROM machine_thresholds
-                        WHERE user_id = ?
-                          AND machine_id = ?
-                          AND sensor_type = ?
+                        WHERE user_id = %s
+                          AND machine_id = %s
+                          AND sensor_type = %s
                         """,
                         (user_id, machine_id, sensor_type)
                     )
@@ -2033,7 +2058,7 @@ def manual_page():
                             """
                             INSERT INTO sensor_readings
                             (user_id, machine_id, sensor_type, sensor_value, threshold_value, status, recorded_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 user_id,
